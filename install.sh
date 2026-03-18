@@ -57,7 +57,7 @@ rm /tmp/tflint.zip
 tflint --version
 
 # ── 7. CHECKOV ─────────────────────────────────────────────────────────────────
-pip3 install checkov --upgrade --break-system-packages
+pip3 install checkov --upgrade
 checkov --version
 
 # ── 8. DOCKER ──────────────────────────────────────────────────────────────────
