@@ -93,7 +93,7 @@ resource "terraform_data" "wait_for_install" {
           --query 'StandardOutputContent' \
           --output text 2>/dev/null || echo "0")
 
-        if [ "$RESULT" = "1" ]; then
+        if [ "$${RESULT:-0}" -gt 0 ] 2>/dev/null; then
           echo "Install complete!"
           exit 0
         fi
