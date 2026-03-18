@@ -37,7 +37,7 @@ resource "aws_instance" "ami_builder" {
   iam_instance_profile        = aws_iam_instance_profile.ami_builder.name
   associate_public_ip_address = false
 
-  user_data = base64encode(file("${path.module}/install.sh"))
+  user_data_base64 = base64encode(file("${path.module}/install.sh"))
 
   # Wait for user-data to finish before snapshotting
   user_data_replace_on_change = true
@@ -58,7 +58,7 @@ resource "aws_instance" "ami_builder" {
 
 # ── WAIT FOR INSTALL TO COMPLETE ──────────────────────────────────────────────
 # Polls SSM until the install script writes "AMI install complete" to the log
-resource "null_resource" "wait_for_install" {
+resource "terraform_data" "wait_for_install" {
   depends_on = [aws_instance.ami_builder]
 
   provisioner "local-exec" {
@@ -73,10 +73,21 @@ resource "null_resource" "wait_for_install" {
           --output text \
           --region ${var.aws_region} 2>/dev/null)
 
-        sleep 5
+        # Skip iteration if SSM agent not ready yet
+        if [ -z "$STATUS" ] || [ "$STATUS" = "None" ]; then
+          echo "Attempt $i/60 — waiting for SSM agent..."
+          sleep 30
+          continue
+        fi
+
+        # Block until the command finishes (avoids reading empty InProgress output)
+        aws ssm wait command-executed \
+          --command-id "$STATUS" \
+          --instance-id ${aws_instance.ami_builder.id} \
+          --region ${var.aws_region} 2>/dev/null || true
 
         RESULT=$(aws ssm get-command-invocation \
-          --command-id $STATUS \
+          --command-id "$STATUS" \
           --instance-id ${aws_instance.ami_builder.id} \
           --region ${var.aws_region} \
           --query 'StandardOutputContent' \
@@ -98,9 +109,9 @@ resource "null_resource" "wait_for_install" {
 
 # ── CREATE AMI FROM INSTANCE ──────────────────────────────────────────────────
 resource "aws_ami_from_instance" "runner" {
-  depends_on         = [null_resource.wait_for_install]
-  name               = "${local.resource_name_prefix}-runner-${formatdate("YYYYMMDD-HHmm", timestamp())}"
-  source_instance_id = aws_instance.ami_builder.id
+  depends_on              = [terraform_data.wait_for_install]
+  name                    = "${local.resource_name_prefix}-runner-${formatdate("YYYYMMDD-HHmm", timestamp())}"
+  source_instance_id      = aws_instance.ami_builder.id
   snapshot_without_reboot = false
 
   tags = {
@@ -113,11 +124,14 @@ resource "aws_ami_from_instance" "runner" {
 
   lifecycle {
     create_before_destroy = true
+    # timestamp() changes on every plan — ignore_changes prevents
+    # the AMI from being recreated unless the instance itself changes
+    ignore_changes = [name]
   }
 }
 
 # ── TERMINATE BUILDER INSTANCE ────────────────────────────────────────────────
-resource "null_resource" "terminate_builder" {
+resource "terraform_data" "terminate_builder" {
   depends_on = [aws_ami_from_instance.runner]
 
   provisioner "local-exec" {
